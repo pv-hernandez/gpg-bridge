@@ -54,7 +54,7 @@ func main() {
 	socketName := os.Args[1]
 	gpgconfCmd := make([]string, 0, len(suffixes))
 	for i := range len(suffixes) {
-		value, exists := os.LookupEnv(fmt.Sprintf("GPGAGENTBRIDGE_GPGCONF_%s", suffixes[i]))
+		value, exists := os.LookupEnv(fmt.Sprintf("GPG_BRIDGE_GPGCONF_%s", suffixes[i]))
 		if !exists {
 			if i == 0 {
 				value = "gpgconf"
