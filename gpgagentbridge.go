@@ -12,15 +12,16 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
+	"time"
 )
 
-func getSocketFile(socketName string, gpgconfCmd []string, cygpathCmd []string) (string, error) {
+func getSocketFile(socketName string, gpgconfCmd []string) (string, error) {
 	// log.Printf("getting socket file for %s", socketName)
 	cmdParts := make([]string, len(gpgconfCmd), len(gpgconfCmd)+2)
 	copy(cmdParts, gpgconfCmd)
 	cmdParts = append(cmdParts, "--list-dirs", socketName)
-	log.Printf("commands: %v", cmdParts)
 	cmd := exec.Command(cmdParts[0], cmdParts[1:]...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -34,24 +35,7 @@ func getSocketFile(socketName string, gpgconfCmd []string, cygpathCmd []string) 
 	if len(out) == 0 {
 		return "", fmt.Errorf("Invalid socket name: '%s'", socketName)
 	}
-	path := string(out[:len(out)-1])
-	if path[0] == '/' {
-		// cygwin version of gnupg
-		// log.Printf("converting cygwin path to windows '%s'", string(out))
-		cmdParts = make([]string, len(cygpathCmd), len(cygpathCmd)+2)
-		copy(cmdParts, cygpathCmd)
-		cmdParts = append(cmdParts, "-w", path)
-		cmd = exec.Command(cmdParts[0], cmdParts[1:]...)
-		out, err = cmd.CombinedOutput()
-		if err != nil {
-			return "", err
-			// log.Panicf("Failed convert cygwin path '%s' to windows path: %v", string(out), err)
-		}
-		if len(out) == 0 {
-			return "", fmt.Errorf("Invalid socket path: '%s'", path)
-		}
-		path = string(out[:len(out)-1])
-	}
+	path := strings.TrimRight(string(out), "\n\r")
 	log.Printf("got socket file '%s'", path)
 	socketFile := path
 	return socketFile, nil
@@ -59,11 +43,14 @@ func getSocketFile(socketName string, gpgconfCmd []string, cygpathCmd []string) 
 
 func main() {
 	log.Default().SetOutput(os.Stderr)
+	for _, envvar := range os.Environ() {
+		log.Printf("env: %v", envvar)
+	}
 	if len(os.Args) < 2 {
 		log.Panicf("Usage: %s <socket-name>", os.Args[0])
 	}
 
-	suffixes := [...]string{"CMD", "ARG1", "ARG2", "ARG3", "ARG4"}
+	suffixes := [...]string{"CMD", "ARG1", "ARG2", "ARG3", "ARG4", "ARG5", "ARG6", "ARG7", "ARG8", "ARG9"}
 	socketName := os.Args[1]
 	gpgconfCmd := make([]string, 0, len(suffixes))
 	for i := range len(suffixes) {
@@ -77,20 +64,8 @@ func main() {
 		}
 		gpgconfCmd = append(gpgconfCmd, value)
 	}
-	cygpathCmd := make([]string, 0, len(suffixes))
-	for i := range len(suffixes) {
-		value, exists := os.LookupEnv(fmt.Sprintf("GPGAGENTBRIDGE_CYGPATH_%s", suffixes[i]))
-		if !exists {
-			if i == 0 {
-				value = "cygpath"
-				cygpathCmd = append(cygpathCmd, value)
-			}
-			break
-		}
-		cygpathCmd = append(cygpathCmd, value)
-	}
 
-	socketFile, err := getSocketFile(socketName, gpgconfCmd, cygpathCmd)
+	socketFile, err := getSocketFile(socketName, gpgconfCmd)
 	if err != nil {
 		log.Panicf("Failed to get socket file from socket name '%s': %v", socketName, err)
 	}
@@ -98,8 +73,9 @@ func main() {
 	// log.Printf("trying stat")
 	info, err := os.Stat(socketFile)
 	if err != nil {
+		log.Printf("error during socket stat")
 		if errors.Is(err, os.ErrNotExist) {
-			// log.Printf("trying to start gpg-agent")
+			log.Printf("trying to start gpg-agent")
 			err = launchGpgAgent(gpgconfCmd)
 			if err != nil {
 				log.Panicf("Failed to start gpg-agent service: %v", err)
@@ -157,16 +133,15 @@ func main() {
 			}
 			offset += 2
 			for i := range 4 {
-				// convert into little endian binary
+				// convert from little endian ascii to big endian binary
 				part := buffer[offset : offset+8]
-				for j := range 4 {
-					s := 6 - 2*j
-					d := j + 4*i
-					_, err = hex.Decode(nonce[d:d+1], part[s:s+2])
-					if err != nil {
-						log.Panicf("Failed decoding nounce part %d byte %d: %v", i, j, err)
-					}
+				bin := [4]byte{}
+				_, err = hex.Decode(bin[:], part)
+				if err != nil {
+					log.Panicf("Failed decoding nonce part %d: %v", i, err)
 				}
+				num := binary.LittleEndian.Uint32(bin[:])
+				binary.BigEndian.PutUint32(nonce[4*i:], num)
 				offset += 9
 			}
 		} else {
@@ -184,16 +159,17 @@ func main() {
 		}
 
 		address := fmt.Sprintf("127.0.0.1:%d", port)
-		conn, err = net.Dial("tcp4", address)
+		conn, err = net.DialTimeout("tcp4", address, time.Duration(1*time.Second))
 		if err != nil {
+			log.Printf("error during first connect")
 			if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.Errno(0x274d)) {
-				// log.Printf("trying to start gpg-agent")
+				log.Printf("trying to start gpg-agent")
 				err = launchGpgAgent(gpgconfCmd)
 				if err != nil {
 					log.Panicf("Failed to start gpg-agent service: %v", err)
 				}
 			}
-			conn, err = net.Dial("tcp4", address)
+			conn, err = net.DialTimeout("tcp4", address, time.Duration(1*time.Second))
 			if err != nil {
 				log.Panicf("Failed to connect to socket '%s': %v", address, err)
 			}
@@ -241,17 +217,18 @@ func main() {
 			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
 				return
 			}
-			// log.Printf("Error reading from socket: %v", err)
+			log.Printf("Error reading from socket: %v", err)
 		}
 		done <- struct{}{}
 	}()
 
 	go func() {
 		if _, err := io.Copy(conn, os.Stdin); err != nil {
-			// log.Printf("Error writing to socket: %v", err)
+			log.Printf("Error writing to socket: %v", err)
 		}
 		done <- struct{}{}
 	}()
 
 	<-done
+	log.Printf("connection closed")
 }

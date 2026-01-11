@@ -4,7 +4,10 @@ Requires=gpg-agent-ssh.socket
 CollectMode=inactive-or-failed
 
 [Service]
-ExecStart=gpgagentbridge agent-ssh-socket
+# EnvironmentFile=%E/gpgagentbridge/git-for-windows.env
+# EnvironmentFile=%E/gpgagentbridge/gnupg-standalone.env
+# ExecSearchPath=
+ExecStart=gpgagentbridge.exe agent-ssh-socket
 StandardInput=socket
 StandardOutput=socket
 StandardError=journal
