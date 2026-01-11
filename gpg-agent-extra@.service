@@ -1,0 +1,10 @@
+[Unit]
+Description=Windows bridge for GPG Agent' extra socket
+Requires=gpg-agent-extra.socket
+CollectMode=inactive-or-failed
+
+[Service]
+ExecStart=gpgagentbridge agent-extra-socket
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal

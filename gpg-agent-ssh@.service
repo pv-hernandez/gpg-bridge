@@ -1,0 +1,10 @@
+[Unit]
+Description=Windows bridge for GPG Agent's ssh socket
+Requires=gpg-agent-ssh.socket
+CollectMode=inactive-or-failed
+
+[Service]
+ExecStart=gpgagentbridge agent-ssh-socket
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal

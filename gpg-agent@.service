@@ -1,0 +1,10 @@
+[Unit]
+Description=Windows bridge for GPG Agent
+Requires=gpg-agent.socket
+CollectMode=inactive-or-failed
+
+[Service]
+ExecStart=gpgagentbridge agent-socket
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
