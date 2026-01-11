@@ -41,6 +41,78 @@ func getSocketFile(socketName string, gpgconfCmd []string) (string, error) {
 	return socketFile, nil
 }
 
+func readPortAndNonce(socketFile string) (int, []byte, bool, error) {
+	n := 0
+	buffer := [54]byte{}
+	{
+		file, err := os.Open(socketFile)
+		if err != nil {
+			return 0, nil, false, fmt.Errorf("Failed to open socket-file '%s': %v", socketFile, err)
+		}
+		defer file.Close()
+
+		reader := bufio.NewReader(file)
+
+		n, err = reader.Read(buffer[:])
+		if err != nil {
+			return 0, nil, false, fmt.Errorf("Failed to read socket-file '%s': %v", socketFile, err)
+		}
+	}
+	if n == 0 {
+		return 0, nil, false, fmt.Errorf("Socket-file '%s' is empty", socketFile)
+	}
+	port := 0
+	nonce := [16]byte{}
+	cygwin := false
+	offset := 0
+	var err error
+	if string(buffer[:10]) == "!<socket >" {
+		// cygwin compatible unix socket emulation
+		cygwin = true
+		offset = 10
+		portEnd := offset
+		for ; portEnd < n && buffer[portEnd] != ' '; portEnd++ {
+		}
+		portStr := string(buffer[offset:portEnd])
+		port, err = strconv.Atoi(portStr)
+		if err != nil {
+			return 0, nil, false, fmt.Errorf("Failed parsing port '%s': %v", portStr, err)
+		}
+
+		offset = portEnd + 1
+		socketType := string(buffer[offset : offset+1])
+		if socketType != "s" {
+			return 0, nil, false, fmt.Errorf("Unsupported socket type %s", socketType)
+		}
+		offset += 2
+		for i := range 4 {
+			// convert from little endian ascii to big endian binary
+			part := buffer[offset : offset+8]
+			bin := [4]byte{}
+			_, err = hex.Decode(bin[:], part)
+			if err != nil {
+				return 0, nil, false, fmt.Errorf("Failed decoding nonce part %d: %v", i, err)
+			}
+			num := binary.LittleEndian.Uint32(bin[:])
+			binary.BigEndian.PutUint32(nonce[4*i:], num)
+			offset += 9
+		}
+	} else {
+		// libassuan compatible unix socket emulation
+		portStrEnd := 0
+		for ; portStrEnd < n && buffer[portStrEnd] != '\n'; portStrEnd++ {
+		}
+		portStr := string(buffer[offset:portStrEnd])
+		port, err = strconv.Atoi(portStr)
+		if err != nil {
+			return 0, nil, false, fmt.Errorf("Failed parsing port '%s': %v", portStr, err)
+		}
+		offset = portStrEnd + 1
+		copy(nonce[:], buffer[offset:])
+	}
+	return port, nonce[:], cygwin, nil
+}
+
 func main() {
 	log.Default().SetOutput(os.Stderr)
 	for _, envvar := range os.Environ() {
@@ -93,69 +165,9 @@ func main() {
 	mode := info.Mode()
 	if mode.IsRegular() {
 		// emulated unix domain socket
-		file, err := os.Open(socketFile)
+		port, nonce, cygwin, err := readPortAndNonce(socketFile)
 		if err != nil {
-			log.Panicf("Failed to open socket-file '%s': %v", socketFile, err)
-		}
-		defer file.Close()
-
-		reader := bufio.NewReader(file)
-
-		buffer := [54]byte{}
-		n, err := reader.Read(buffer[:])
-		if err != nil {
-			log.Panicf("Failed to read socket-file '%s': %v", socketFile, err)
-		}
-		if n == 0 {
-			log.Panicf("Socket-file '%s' is empty", socketFile)
-		}
-		port := 0
-		nonce := [16]byte{}
-		cygwin := false
-		offset := 0
-		if string(buffer[:10]) == "!<socket >" {
-			// cygwin compatible unix socket emulation
-			cygwin = true
-			offset = 10
-			portEnd := offset
-			for ; portEnd < n && buffer[portEnd] != ' '; portEnd++ {
-			}
-			portStr := string(buffer[offset:portEnd])
-			port, err = strconv.Atoi(portStr)
-			if err != nil {
-				log.Panicf("Failed parsing port '%s': %v", portStr, err)
-			}
-
-			offset = portEnd + 1
-			socketType := string(buffer[offset : offset+1])
-			if socketType != "s" {
-				log.Panicf("Unsupported socket type %s", socketType)
-			}
-			offset += 2
-			for i := range 4 {
-				// convert from little endian ascii to big endian binary
-				part := buffer[offset : offset+8]
-				bin := [4]byte{}
-				_, err = hex.Decode(bin[:], part)
-				if err != nil {
-					log.Panicf("Failed decoding nonce part %d: %v", i, err)
-				}
-				num := binary.LittleEndian.Uint32(bin[:])
-				binary.BigEndian.PutUint32(nonce[4*i:], num)
-				offset += 9
-			}
-		} else {
-			// libassuan compatible unix socket emulation
-			portStrEnd := 0
-			for ; portStrEnd < n && buffer[portStrEnd] != '\n'; portStrEnd++ {
-			}
-			portStr := string(buffer[offset:portStrEnd])
-			port, err = strconv.Atoi(portStr)
-			if err != nil {
-				log.Panicf("Failed parsing port '%s': %v", portStr, err)
-			}
-			offset = portStrEnd + 1
-			copy(nonce[:], buffer[offset:])
+			log.Panicf("Failed to read port and nonce from socket file '%s': %v", socketFile, err)
 		}
 
 		address := fmt.Sprintf("127.0.0.1:%d", port)
@@ -168,8 +180,13 @@ func main() {
 				if err != nil {
 					log.Panicf("Failed to start gpg-agent service: %v", err)
 				}
+				port, nonce, cygwin, err = readPortAndNonce(socketFile)
+				if err != nil {
+					log.Panicf("Failed to read port and nonce from socket file '%s': %v", socketFile, err)
+				}
+				address = fmt.Sprintf("127.0.0.1:%d", port)
+				conn, err = net.DialTimeout("tcp4", address, time.Duration(1*time.Second))
 			}
-			conn, err = net.DialTimeout("tcp4", address, time.Duration(1*time.Second))
 			if err != nil {
 				log.Panicf("Failed to connect to socket '%s': %v", address, err)
 			}
