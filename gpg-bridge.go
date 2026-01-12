@@ -47,7 +47,7 @@ func readPortAndNonce(socketFile string) (int, []byte, bool, error) {
 	{
 		file, err := os.Open(socketFile)
 		if err != nil {
-			return 0, nil, false, fmt.Errorf("Failed to open socket-file '%s': %v", socketFile, err)
+			return 0, nil, false, fmt.Errorf("Failed to open socket-file '%s': %w", socketFile, err)
 		}
 		defer file.Close()
 
@@ -55,7 +55,7 @@ func readPortAndNonce(socketFile string) (int, []byte, bool, error) {
 
 		n, err = reader.Read(buffer[:])
 		if err != nil {
-			return 0, nil, false, fmt.Errorf("Failed to read socket-file '%s': %v", socketFile, err)
+			return 0, nil, false, fmt.Errorf("Failed to read socket-file '%s': %w", socketFile, err)
 		}
 	}
 	if n == 0 {
@@ -76,7 +76,7 @@ func readPortAndNonce(socketFile string) (int, []byte, bool, error) {
 		portStr := string(buffer[offset:portEnd])
 		port, err = strconv.Atoi(portStr)
 		if err != nil {
-			return 0, nil, false, fmt.Errorf("Failed parsing port '%s': %v", portStr, err)
+			return 0, nil, false, fmt.Errorf("Failed parsing port '%s': %w", portStr, err)
 		}
 
 		offset = portEnd + 1
@@ -91,7 +91,7 @@ func readPortAndNonce(socketFile string) (int, []byte, bool, error) {
 			bin := [4]byte{}
 			_, err = hex.Decode(bin[:], part)
 			if err != nil {
-				return 0, nil, false, fmt.Errorf("Failed decoding nonce part %d: %v", i, err)
+				return 0, nil, false, fmt.Errorf("Failed decoding nonce part %d: %w", i, err)
 			}
 			num := binary.LittleEndian.Uint32(bin[:])
 			binary.BigEndian.PutUint32(nonce[4*i:], num)
@@ -105,12 +105,72 @@ func readPortAndNonce(socketFile string) (int, []byte, bool, error) {
 		portStr := string(buffer[offset:portStrEnd])
 		port, err = strconv.Atoi(portStr)
 		if err != nil {
-			return 0, nil, false, fmt.Errorf("Failed parsing port '%s': %v", portStr, err)
+			return 0, nil, false, fmt.Errorf("Failed parsing port '%s': %w", portStr, err)
 		}
 		offset = portStrEnd + 1
 		copy(nonce[:], buffer[offset:])
 	}
 	return port, nonce[:], cygwin, nil
+}
+
+func socketConnect(socketFile string) (net.Conn, error) {
+	info, err := os.Stat(socketFile)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to stat socket file '%s': %v", socketFile, err)
+	}
+
+	var conn net.Conn
+
+	mode := info.Mode()
+	if mode.IsRegular() {
+		// emulated unix domain socket
+		port, nonce, cygwin, err := readPortAndNonce(socketFile)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to read port and nonce from socket file '%s': %w", socketFile, err)
+		}
+
+		address := fmt.Sprintf("127.0.0.1:%d", port)
+		conn, err = net.DialTimeout("tcp4", address, time.Duration(1*time.Second))
+		if err != nil {
+			return nil, fmt.Errorf("Failed to connect to socket '%s': %w", address, err)
+		}
+		defer func() {
+			if err != nil {
+				conn.Close()
+			}
+		}()
+
+		_, err = conn.Write(nonce[:])
+		if err != nil {
+			return nil, fmt.Errorf("Failed to send nonce %v to socket: %w", nonce, err)
+		}
+		if cygwin {
+			_, err := conn.Read(nonce[:])
+			if err != nil {
+				return nil, fmt.Errorf("Failed to receive nonce echo from socket: %w", err)
+			}
+
+			pid := os.Getpid()
+			binary.BigEndian.PutUint32(nonce[:4], uint32(pid))
+			binary.BigEndian.PutUint32(nonce[4:8], 0)
+			binary.BigEndian.PutUint32(nonce[8:12], 0)
+			_, err = conn.Write(nonce[:12])
+			if err != nil {
+				return nil, fmt.Errorf("Failed to send credentials %v to socket: %w", nonce[:12], err)
+			}
+			_, err = conn.Read(nonce[:12])
+			if err != nil {
+				return nil, fmt.Errorf("Failed to receive credentials from socket: %w", err)
+			}
+		}
+	} else if mode&os.ModeSocket != 0 {
+		// unix domain socket
+		conn, err = net.Dial("unix", socketFile)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to connect to socket '%s': %w", socketFile, err)
+		}
+	}
+	return conn, nil
 }
 
 func main() {
@@ -142,88 +202,23 @@ func main() {
 		log.Panicf("Failed to get socket file from socket name '%s': %v", socketName, err)
 	}
 
-	// log.Printf("trying stat")
-	info, err := os.Stat(socketFile)
+	conn, err := socketConnect(socketFile)
 	if err != nil {
-		log.Printf("error during socket stat")
-		if errors.Is(err, os.ErrNotExist) {
+		log.Printf("failed to connect to socket on first try")
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.Errno(0x274d)) {
 			log.Printf("trying to start gpg-agent")
 			err = launchGpgAgent(gpgconfCmd)
 			if err != nil {
 				log.Panicf("Failed to start gpg-agent service: %v", err)
 			}
-			// log.Printf("retrying stat")
-			info, err = os.Stat(socketFile)
+			log.Printf("retrying to connect")
+			conn, err = socketConnect(socketFile)
 		}
 		if err != nil {
-			log.Panicf("Failed to stat socket-file '%s': %v", socketFile, err)
+			log.Panicf("Failed to connect to socket: %v", err)
 		}
 	}
-
-	var conn net.Conn
-
-	mode := info.Mode()
-	if mode.IsRegular() {
-		// emulated unix domain socket
-		port, nonce, cygwin, err := readPortAndNonce(socketFile)
-		if err != nil {
-			log.Panicf("Failed to read port and nonce from socket file '%s': %v", socketFile, err)
-		}
-
-		address := fmt.Sprintf("127.0.0.1:%d", port)
-		conn, err = net.DialTimeout("tcp4", address, time.Duration(1*time.Second))
-		if err != nil {
-			log.Printf("error during first connect")
-			if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.Errno(0x274d)) {
-				log.Printf("trying to start gpg-agent")
-				err = launchGpgAgent(gpgconfCmd)
-				if err != nil {
-					log.Panicf("Failed to start gpg-agent service: %v", err)
-				}
-				port, nonce, cygwin, err = readPortAndNonce(socketFile)
-				if err != nil {
-					log.Panicf("Failed to read port and nonce from socket file '%s': %v", socketFile, err)
-				}
-				address = fmt.Sprintf("127.0.0.1:%d", port)
-				conn, err = net.DialTimeout("tcp4", address, time.Duration(1*time.Second))
-			}
-			if err != nil {
-				log.Panicf("Failed to connect to socket '%s': %v", address, err)
-			}
-		}
-		defer conn.Close()
-
-		_, err = conn.Write(nonce[:])
-		if err != nil {
-			log.Panicf("Failed to send nonce %v to socket: %v", nonce, err)
-		}
-		if cygwin {
-			_, err := conn.Read(nonce[:])
-			if err != nil {
-				log.Panicf("Failed to receive nonce echo from socket: %v", err)
-			}
-
-			pid := os.Getpid()
-			binary.BigEndian.PutUint32(nonce[:4], uint32(pid))
-			binary.BigEndian.PutUint32(nonce[4:8], 0)
-			binary.BigEndian.PutUint32(nonce[8:12], 0)
-			_, err = conn.Write(nonce[:12])
-			if err != nil {
-				log.Panicf("Failed to send credentials %v to socket: %v", nonce[:12], err)
-			}
-			_, err = conn.Read(nonce[:12])
-			if err != nil {
-				log.Panicf("Failed to receive credentials from socket: %v", err)
-			}
-		}
-	} else if mode&os.ModeSocket != 0 {
-		// unix domain socket
-		conn, err = net.Dial("unix", socketFile)
-		if err != nil {
-			log.Panicf("Failed to connect to socket '%s': %v", socketFile, err)
-		}
-		defer conn.Close()
-	}
+	defer conn.Close()
 
 	// log.Printf("Connected to socket-file '%s'", socketFile)
 
