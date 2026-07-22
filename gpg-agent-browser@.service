@@ -1,6 +1,6 @@
 [Unit]
 Description=Windows bridge for GPG Agent's browser socket
-Requires=gpg-agent-broser.socket
+Requires=gpg-agent-browser.socket
 CollectMode=inactive-or-failed
 
 [Service]
