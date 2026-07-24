@@ -31,26 +31,29 @@
             builtins.elemAt (pkgs.lib.strings.splitString "-" pkgs.stdenv.hostPlatform.system) 0
           };
         makeGoApp = goPkgs:
-          (goPkgs.buildGoModule
-            {
+          (
+            goPkgs.buildGoModule {
               pname = "gpg-bridge";
               version = "0.1.0";
               src = ./.;
 
               vendorHash = null;
-            }).overrideAttrs (oldAttrs: {
-            env =
-              (oldAttrs.env or {})
-              // {
-                GOOS = "windows";
-                GOARCH = goArch goPkgs;
-              };
-
-            postInstall = ''
-              mv "$out/bin/windows_${goArch goPkgs}/gpg-bridge.exe" "$out/bin/gpg-bridge.exe"
-              rm -d "$out/bin/windows_${goArch goPkgs}"
-            '';
-          });
+              ldflags = ["-s" "-w"];
+              postInstall = ''
+                mv "$out/bin/windows_${goArch goPkgs}/gpg-bridge.exe" "$out/bin/gpg-bridge.exe"
+                rm -d "$out/bin/windows_${goArch goPkgs}"
+              '';
+            }
+          ).overrideAttrs (
+            oldAttrs: {
+              env =
+                (oldAttrs.env or {})
+                // {
+                  GOOS = "windows";
+                  GOARCH = goArch goPkgs;
+                };
+            }
+          );
       in {
         default = makeGoApp pkgs;
       }
@@ -157,22 +160,15 @@
               }"
             ]
           );
-        serviceTemplate = socketName:
+        serviceOverrideTemplate = socketName:
         /*
         systemd
         */
         ''
-          [Unit]
-          Description=Windows bridge of GPG Agent's ${socketName} socket
-          Requires=${socketName}.socket
-          CollectMode=inactive-or-failed
-
           [Service]
           EnvironmentFile=%E/gpg-bridge/config.env
-          ExecStart="${cfg.package}/bin/gpg-bridge.exe" ${socketName}
-          StandardInput=socket
-          StandardOutput=socket
-          StandardError=journal
+          ExecStart=
+          ExecStart="${cfg.package}/bin/gpg-bridge.exe" "${lib.strings.removePrefix "gpg-" socketName}-socket"
         '';
       in {
         options.programs.gpg-bridge = {
@@ -186,13 +182,17 @@
         config = lib.mkIf cfg.enable {
           home.packages = [cfg.package];
           xdg.configFile."systemd/user/gpg-agent-browser.socket".source = ./gpg-agent-browser.socket;
-          xdg.configFile."systemd/user/gpg-agent-browser@.service".text = serviceTemplate "gpg-agent-browser";
+          xdg.configFile."systemd/user/gpg-agent-browser@.service".source = ./gpg-agent-browser${"@"}.service;
+          xdg.configFile."systemd/user/gpg-agent-browser@.service.d/override.conf".text = serviceOverrideTemplate "gpg-agent-browser";
           xdg.configFile."systemd/user/gpg-agent-extra.socket".source = ./gpg-agent-extra.socket;
-          xdg.configFile."systemd/user/gpg-agent-extra@.service".text = serviceTemplate "gpg-agent-extra";
+          xdg.configFile."systemd/user/gpg-agent-extra@.service".source = ./gpg-agent-extra${"@"}.service;
+          xdg.configFile."systemd/user/gpg-agent-extra@.service.d/override.conf".text = serviceOverrideTemplate "gpg-agent-extra";
           xdg.configFile."systemd/user/gpg-agent-ssh.socket".source = ./gpg-agent-ssh.socket;
-          xdg.configFile."systemd/user/gpg-agent-ssh@.service".text = serviceTemplate "gpg-agent-ssh";
+          xdg.configFile."systemd/user/gpg-agent-ssh@.service".source = ./gpg-agent-ssh${"@"}.service;
+          xdg.configFile."systemd/user/gpg-agent-ssh@.service.d/override.conf".text = serviceOverrideTemplate "gpg-agent-ssh";
           xdg.configFile."systemd/user/gpg-agent.socket".source = ./gpg-agent.socket;
-          xdg.configFile."systemd/user/gpg-agent@.service".text = serviceTemplate "gpg-agent";
+          xdg.configFile."systemd/user/gpg-agent@.service".source = ./gpg-agent${"@"}.service;
+          xdg.configFile."systemd/user/gpg-agent@.service.d/override.conf".text = serviceOverrideTemplate "gpg-agent";
           xdg.configFile."gpg-bridge/config.env".text = gpgbridgeConfigText cfg.gpgInstallType;
           programs.gpg.settings = {
             "no-autostart" = true;
