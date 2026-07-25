@@ -3,7 +3,11 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
   };
-  outputs = {self, nixpkgs, ...}: let
+  outputs = {
+    self,
+    nixpkgs,
+    ...
+  }: let
     supportedSystems = [
       "x86_64-linux"
       "aarch64-linux"
@@ -112,96 +116,93 @@
       wslPackages.gpg-bridge = self.packages;
     };
 
-    homeManagerModules.default = let
-      lib' = self.lib;
-    in
-      {
-        config,
-        lib,
-        pkgs,
-        ...
-      }: let
-        cfg = config.programs.gpg-bridge;
-        camelToSnake = str: let
-          chars = lib.stringToCharacters str;
-          processChars = acc: char: let
-            isUpper = char == lib.toUpper char && char != lib.toLower char;
-            isFirst = acc == "";
-            prefix =
-              if isUpper && !isFirst
-              then "_"
-              else "";
-            LevinChar = prefix + lib.toLower char;
-          in
-            acc + LevinChar;
-          result = lib.foldl' processChars "" chars;
+    homeManagerModules.default = {
+      config,
+      lib,
+      pkgs,
+      ...
+    }: let
+      cfg = config.programs.gpg-bridge;
+      camelToSnake = str: let
+        chars = lib.stringToCharacters str;
+        processChars = acc: char: let
+          isUpper = char == lib.toUpper char && char != lib.toLower char;
+          isFirst = acc == "";
+          prefix =
+            if isUpper && !isFirst
+            then "_"
+            else "";
+          LevinChar = prefix + lib.toLower char;
         in
-          result;
-        optionToEnv = name: "GPG_BRIDGE_${lib.strings.toUpper (camelToSnake name)}";
-        optionToWslEnv = name: "${optionToEnv name}/w${
-          if (lib.strings.hasSuffix "Cmd" name)
-          then "p"
-          else ""
-        }";
-        mapInstallTypeAttrsToList = f: installConfig:
-          lib.mapAttrsToList f (lib.filterAttrs (_: v: v != null) installConfig);
-        gpgbridgeConfigText = installConfig:
-          lib.concatStringsSep "\n" (
-            (
-              mapInstallTypeAttrsToList
-              (key: value: "${optionToEnv key}=${lib.escapeShellArg value}")
-              installConfig
-            )
-            ++ [
-              "WSLENV=${
-                lib.concatStringsSep
-                ":"
-                (
-                  mapInstallTypeAttrsToList
-                  (key: _: optionToWslEnv key)
-                  installConfig
-                )
-              }"
-            ]
-          );
-        serviceOverrideTemplate = socketName:
-        /*
-        systemd
-        */
-        ''
-          [Service]
-          EnvironmentFile=%E/gpg-bridge/config.env
-          ExecStart=
-          ExecStart="${lib.getExe' cfg.package "gpg-bridge.exe"}" "${socketName}"
-        '';
-      in {
-        options.programs.gpg-bridge = {
-          enable = lib.mkEnableOption "GPG Bridge";
-          package = lib.mkPackageOption pkgs "gpg-bridge" {};
-          gpgInstallType = lib.mkOption {
-            type = lib'.installType;
-            default = "gnupgStandalone";
-          };
-        };
-        config = lib.mkIf cfg.enable {
-          home.packages = [cfg.package];
-          xdg.configFile."systemd/user/gpg-agent-browser.socket".source = ./gpg-agent-browser.socket;
-          xdg.configFile."systemd/user/gpg-agent-browser@.service".source = ./gpg-agent-browser${"@"}.service;
-          xdg.configFile."systemd/user/gpg-agent-browser@.service.d/override.conf".text = serviceOverrideTemplate "agent-browser-socket";
-          xdg.configFile."systemd/user/gpg-agent-extra.socket".source = ./gpg-agent-extra.socket;
-          xdg.configFile."systemd/user/gpg-agent-extra@.service".source = ./gpg-agent-extra${"@"}.service;
-          xdg.configFile."systemd/user/gpg-agent-extra@.service.d/override.conf".text = serviceOverrideTemplate "agent-extra-socket";
-          xdg.configFile."systemd/user/gpg-agent-ssh.socket".source = ./gpg-agent-ssh.socket;
-          xdg.configFile."systemd/user/gpg-agent-ssh@.service".source = ./gpg-agent-ssh${"@"}.service;
-          xdg.configFile."systemd/user/gpg-agent-ssh@.service.d/override.conf".text = serviceOverrideTemplate "agent-ssh-socket";
-          xdg.configFile."systemd/user/gpg-agent.socket".source = ./gpg-agent.socket;
-          xdg.configFile."systemd/user/gpg-agent@.service".source = ./gpg-agent${"@"}.service;
-          xdg.configFile."systemd/user/gpg-agent@.service.d/override.conf".text = serviceOverrideTemplate "agent-socket";
-          xdg.configFile."gpg-bridge/config.env".text = gpgbridgeConfigText cfg.gpgInstallType;
-          programs.gpg.settings = {
-            "no-autostart" = true;
-          };
+          acc + LevinChar;
+        result = lib.foldl' processChars "" chars;
+      in
+        result;
+      optionToEnv = name: "GPG_BRIDGE_${lib.strings.toUpper (camelToSnake name)}";
+      optionToWslEnv = name: "${optionToEnv name}/w${
+        if (lib.strings.hasSuffix "Cmd" name)
+        then "p"
+        else ""
+      }";
+      mapInstallTypeAttrsToList = f: installConfig:
+        lib.mapAttrsToList f (lib.filterAttrs (_: v: v != null) installConfig);
+      gpgbridgeConfigText = installConfig:
+        lib.concatStringsSep "\n" (
+          (
+            mapInstallTypeAttrsToList
+            (key: value: "${optionToEnv key}=${lib.escapeShellArg value}")
+            installConfig
+          )
+          ++ [
+            "WSLENV=${
+              lib.concatStringsSep
+              ":"
+              (
+                mapInstallTypeAttrsToList
+                (key: _: optionToWslEnv key)
+                installConfig
+              )
+            }"
+          ]
+        );
+      serviceOverrideTemplate = socketName:
+      /*
+      systemd
+      */
+      ''
+        [Service]
+        EnvironmentFile=%E/gpg-bridge/config.env
+        ExecStart=
+        ExecStart="${lib.getExe' cfg.package "gpg-bridge.exe"}" "${socketName}"
+      '';
+    in {
+      options.programs.gpg-bridge = {
+        enable = lib.mkEnableOption "GPG Bridge";
+        package = lib.mkPackageOption pkgs ["wslPackages" "gpg-bridge"] {};
+        gpgInstallType = lib.mkOption {
+          type = self.lib.installType;
+          default = "gnupgStandalone";
         };
       };
+      config = lib.mkIf cfg.enable {
+        home.packages = [cfg.package];
+        xdg.configFile."systemd/user/gpg-agent-browser.socket".source = ./gpg-agent-browser.socket;
+        xdg.configFile."systemd/user/gpg-agent-browser@.service".source = ./gpg-agent-browser${"@"}.service;
+        xdg.configFile."systemd/user/gpg-agent-browser@.service.d/override.conf".text = serviceOverrideTemplate "agent-browser-socket";
+        xdg.configFile."systemd/user/gpg-agent-extra.socket".source = ./gpg-agent-extra.socket;
+        xdg.configFile."systemd/user/gpg-agent-extra@.service".source = ./gpg-agent-extra${"@"}.service;
+        xdg.configFile."systemd/user/gpg-agent-extra@.service.d/override.conf".text = serviceOverrideTemplate "agent-extra-socket";
+        xdg.configFile."systemd/user/gpg-agent-ssh.socket".source = ./gpg-agent-ssh.socket;
+        xdg.configFile."systemd/user/gpg-agent-ssh@.service".source = ./gpg-agent-ssh${"@"}.service;
+        xdg.configFile."systemd/user/gpg-agent-ssh@.service.d/override.conf".text = serviceOverrideTemplate "agent-ssh-socket";
+        xdg.configFile."systemd/user/gpg-agent.socket".source = ./gpg-agent.socket;
+        xdg.configFile."systemd/user/gpg-agent@.service".source = ./gpg-agent${"@"}.service;
+        xdg.configFile."systemd/user/gpg-agent@.service.d/override.conf".text = serviceOverrideTemplate "agent-socket";
+        xdg.configFile."gpg-bridge/config.env".text = gpgbridgeConfigText cfg.gpgInstallType;
+        programs.gpg.settings = {
+          "no-autostart" = true;
+        };
+      };
+    };
   };
 }
