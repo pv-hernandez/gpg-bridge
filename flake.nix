@@ -3,7 +3,7 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
   };
-  outputs = {nixpkgs, ...}: let
+  outputs = {self, nixpkgs, ...}: let
     supportedSystems = [
       "x86_64-linux"
       "aarch64-linux"
@@ -20,7 +20,7 @@
             }
           )
       );
-  in rec {
+  in {
     packages = forAllSystems (
       pkgs: let
         goArch = pkgs:
@@ -28,7 +28,7 @@
             "x86_64" = "amd64";
             "aarch64" = "arm64";
           }.${
-            builtins.elemAt (pkgs.lib.strings.splitString "-" pkgs.stdenv.hostPlatform.system) 0
+            builtins.head (pkgs.lib.strings.splitString "-" pkgs.stdenv.hostPlatform.system)
           };
         makeGoApp = goPkgs:
           (
@@ -108,8 +108,12 @@
       inherit installType;
     };
 
+    overlays.default = final: prev: {
+      wslPackages.gpg-bridge = self.packages;
+    };
+
     homeManagerModules.default = let
-      lib' = lib;
+      lib' = self.lib;
     in
       {
         config,
