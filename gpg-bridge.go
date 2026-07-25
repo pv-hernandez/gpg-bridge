@@ -175,9 +175,9 @@ func socketConnect(socketFile string) (net.Conn, error) {
 
 func main() {
 	log.Default().SetOutput(os.Stderr)
-	for _, envvar := range os.Environ() {
-		log.Printf("env: %v", envvar)
-	}
+	// for _, envvar := range os.Environ() {
+	// 	log.Printf("env: %v", envvar)
+	// }
 	if len(os.Args) < 2 {
 		log.Panicf("Usage: %s <socket-name>", os.Args[0])
 	}
