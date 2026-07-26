@@ -27,13 +27,7 @@
   in {
     packages = forAllSystems (
       pkgs: let
-        goArch = pkgs:
-          {
-            "x86_64" = "amd64";
-            "aarch64" = "arm64";
-          }.${
-            builtins.head (pkgs.lib.strings.splitString "-" pkgs.stdenv.hostPlatform.system)
-          };
+        goArch = pkgs: pkgs.stdenv.hostPlatform.go.GOARCH;
         makeGoApp = goPkgs:
           (
             goPkgs.buildGoModule {
@@ -113,7 +107,11 @@
     };
 
     overlays.default = final: prev: {
-      wslPackages.gpg-bridge = self.packages;
+      wslPackages =
+        (prev.wslPackages or {})
+        // {
+          gpg-bridge = self.packages.${final.stdenv.hostPlatform.system}.default;
+        };
     };
 
     homeManagerModules.default = {
